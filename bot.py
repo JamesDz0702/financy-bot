@@ -124,10 +124,113 @@ def create_pdf_report(period):
     categories = {}
     total = 0
     for row in rows:
-        cat = row[3]
-        amount = row[1]
-        categories[cat] = categories.get(cat, 0) + amount
-        total += amount
+        categories[row[3]] = categories.get(row[3], 0) + row[1]
+        total += row[1]
+
+    pdf_buf = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buf, pagesize=A4,
+                            rightMargin=30, leftMargin=30,
+                            topMargin=30, bottomMargin=30)
+    story = []
+    styles = getSampleStyleSheet()
+
+    # Заголовок
+    story.append(Paragraph("Финансовый отчёт",
+        ParagraphStyle('T', parent=styles['Title'], fontSize=22,
+                       spaceAfter=10, textColor=colors.HexColor('#2C3E50'))))
+
+    story.append(Paragraph(
+        f"{label} | Создан: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        ParagraphStyle('S', parent=styles['Normal'], fontSize=12,
+                       spaceAfter=10, textColor=colors.HexColor('#7F8C8D'))))
+
+    story.append(Paragraph(f"Общая сумма: {total:.2f} руб.",
+        ParagraphStyle('Tot', parent=styles['Normal'], fontSize=18,
+                       spaceAfter=20, textColor=colors.HexColor('#27AE60'),
+                       fontName='Helvetica-Bold')))
+
+    story.append(Spacer(1, 10))
+
+    # Таблица категорий
+    story.append(Paragraph("По категориям:",
+        ParagraphStyle('Sec', parent=styles['Heading2'], fontSize=14,
+                       textColor=colors.HexColor('#2C3E50'), spaceAfter=10)))
+
+    tdata = [['Категория', 'Сумма (руб.)', 'Доля (%)']]
+    for cat, amt in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        tdata.append([cat, f"{amt:.2f}", f"{(amt / total * 100):.1f}%"])
+    tdata.append(['ИТОГО', f"{total:.2f}", "100%"])
+
+    t = Table(tdata, colWidths=[200, 150, 100])
+    t.setStyle(TableStyle([
+        ('BACKGROUND',    (0, 0),  (-1, 0),  colors.HexColor('#2C3E50')),
+        ('TEXTCOLOR',     (0, 0),  (-1, 0),  colors.white),
+        ('FONTNAME',      (0, 0),  (-1, 0),  'Helvetica-Bold'),
+        ('FONTSIZE',      (0, 0),  (-1, -1), 11),
+        ('ALIGN',         (0, 0),  (-1, -1), 'CENTER'),
+        ('ROWBACKGROUNDS',(0, 1),  (-1, -2), [colors.white, colors.HexColor('#ECF0F1')]),
+        ('BACKGROUND',    (0, -1), (-1, -1), colors.HexColor('#27AE60')),
+        ('TEXTCOLOR',     (0, -1), (-1, -1), colors.white),
+        ('FONTNAME',      (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID',          (0, 0),  (-1, -1), 0.5, colors.HexColor('#BDC3C7')),
+        ('ROWHEIGHT',     (0, 0),  (-1, -1), 28),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 20))
+
+    # Текстовый график
+    story.append(Paragraph("Визуализация:",
+        ParagraphStyle('Sec2', parent=styles['Heading2'], fontSize=14,
+                       textColor=colors.HexColor('#2C3E50'), spaceAfter=10)))
+
+    max_amt = max(categories.values())
+    bar_data = []
+    for cat, amt in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        bar_len = int((amt / max_amt) * 20)
+        bar = '█' * bar_len + '░' * (20 - bar_len)
+        pct = (amt / total * 100)
+        bar_data.append([cat, bar, f"{amt:.2f} руб.", f"{pct:.1f}%"])
+
+    bar_table = Table(bar_data, colWidths=[100, 160, 120, 70])
+    bar_table.setStyle(TableStyle([
+        ('FONTNAME',  (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE',  (0, 0), (-1, -1), 10),
+        ('ALIGN',     (0, 0), (0, -1),  'LEFT'),
+        ('ALIGN',     (1, 0), (1, -1),  'LEFT'),
+        ('ALIGN',     (2, 0), (-1, -1), 'RIGHT'),
+        ('TEXTCOLOR', (1, 0), (1, -1),  colors.HexColor('#2688eb')),
+        ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')]),
+        ('ROWHEIGHT', (0, 0), (-1, -1), 22),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(bar_table)
+    story.append(Spacer(1, 20))
+
+    # Детализация
+    story.append(Paragraph("Все траты:",
+        ParagraphStyle('Sec3', parent=styles['Heading2'], fontSize=14,
+                       textColor=colors.HexColor('#2C3E50'), spaceAfter=10)))
+
+    ddata = [['#', 'Дата', 'Описание', 'Категория', 'Сумма']]
+    for i, row in enumerate(rows, 1):
+        ddata.append([str(i), row[4][:10], row[2][:25], row[3], f"{row[1]:.2f}"])
+
+    dt = Table(ddata, colWidths=[25, 80, 170, 100, 75])
+    dt.setStyle(TableStyle([
+        ('BACKGROUND',    (0, 0),  (-1, 0),  colors.HexColor('#34495E')),
+        ('TEXTCOLOR',     (0, 0),  (-1, 0),  colors.white),
+        ('FONTNAME',      (0, 0),  (-1, 0),  'Helvetica-Bold'),
+        ('FONTSIZE',      (0, 0),  (-1, -1), 9),
+        ('ALIGN',         (0, 0),  (-1, -1), 'CENTER'),
+        ('ROWBACKGROUNDS',(0, 1),  (-1, -1), [colors.white, colors.HexColor('#ECF0F1')]),
+        ('GRID',          (0, 0),  (-1, -1), 0.5, colors.HexColor('#BDC3C7')),
+        ('ROWHEIGHT',     (0, 0),  (-1, -1), 20),
+    ]))
+    story.append(dt)
+
+    doc.build(story)
+    pdf_buf.seek(0)
+    return pdf_buf
 
     # --- Графики ---
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
@@ -464,3 +567,4 @@ def handle_expense(message):
 
 print("Running bot...")
 bot.infinity_polling()
+
