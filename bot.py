@@ -1,6 +1,8 @@
 import os
 import telebot
 import sqlite3
+import time
+import threading
 from datetime import datetime, timedelta
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -29,13 +31,13 @@ init_db()
 # ==================== КАТЕГОРИИ ====================
 
 CATEGORY_KEYWORDS = {
-    'Еда': ['еда', 'обед', 'ужин', 'завтрак', 'продукты', 'магазин', 'кофе', 'пицца', 'суши', 'бургер'],
-    'Транспорт': ['такси', 'метро', 'автобус', 'бензин', 'машина', 'uber', 'bolt'],
-    'Дом': ['аренда', 'коммуналка', 'интернет', 'ремонт', 'мебель'],
-    'Развлечения': ['кино', 'бар', 'клуб', 'подписка', 'игры', 'концерт'],
-    'Здоровье': ['аптека', 'врач', 'лекарства', 'стоматолог', 'спортзал'],
-    'Связь': ['телефон', 'мтс', 'билайн', 'мегафон'],
-    'Покупки': ['одежда', 'обувь', 'техника', 'подарок'],
+    '🍔 Еда': ['еда', 'обед', 'ужин', 'завтрак', 'продукты', 'магазин', 'кофе', 'пицца', 'суши', 'бургер'],
+    '🚕 Транспорт': ['такси', 'метро', 'автобус', 'бензин', 'машина', 'uber', 'bolt'],
+    '🏠 Дом': ['аренда', 'коммуналка', 'интернет', 'ремонт', 'мебель'],
+    '🎬 Развлечения': ['кино', 'бар', 'клуб', 'подписка', 'игры', 'концерт'],
+    '💊 Здоровье': ['аптека', 'врач', 'лекарства', 'стоматолог', 'спортзал'],
+    '📱 Связь': ['телефон', 'мтс', 'билайн', 'мегафон'],
+    '🛍️ Покупки': ['одежда', 'обувь', 'техника', 'подарок'],
 }
 
 def get_category(text):
@@ -44,115 +46,133 @@ def get_category(text):
         for keyword in keywords:
             if keyword in text_lower:
                 return category
-    return 'Разное'
+    return '📦 Разное'
 
-# ==================== ГЛАВНАЯ КЛАВИАТУРА ====================
+# ==================== КЛАВИАТУРЫ ====================
 
 def create_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    
-    btn_stats_today = KeyboardButton("📊 Итоги сегодня")
-    btn_stats_month = KeyboardButton("📊 Итоги месяц")
-    btn_stats_all = KeyboardButton("📊 Итоги всего")
-    
-    btn_history_today = KeyboardButton("📜 История сегодня")
-    btn_history_week = KeyboardButton("📜 История неделя")
-    btn_history_month = KeyboardButton("📜 История месяц")
-    btn_history_all = KeyboardButton("📜 История всё")
-    
-    btn_report_today = KeyboardButton("📄 Отчёт сегодня")
-    btn_report_week = KeyboardButton("📄 Отчёт неделя")
-    btn_report_month = KeyboardButton("📄 Отчёт месяц")
-    btn_report_all = KeyboardButton("📄 Отчёт всё")
-    
-    btn_delete = KeyboardButton("🗑️ Удалить трату")
-    btn_clear = KeyboardButton("🗑️ Сбросить всё")
-    
-    markup.add(btn_stats_today, btn_stats_month, btn_stats_all)
-    markup.add(btn_history_today, btn_history_week, btn_history_month, btn_history_all)
-    markup.add(btn_report_today, btn_report_week, btn_report_month, btn_report_all)
-    markup.add(btn_delete, btn_clear)
-    
+    markup.add(KeyboardButton("📊 Итоги"), KeyboardButton("📜 История"))
+    markup.add(KeyboardButton("🗑️ Удалить"), KeyboardButton("🗑️ Сбросить"))
     return markup
 
-# ==================== КЛАВИАТУРА УДАЛЕНИЯ ====================
+def create_period_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("📅 Сегодня"), KeyboardButton("📆 Неделя"))
+    markup.add(KeyboardButton("📆 Месяц"), KeyboardButton("📋 Всё"))
+    markup.add(KeyboardButton("🔙 Назад"))
+    return markup
 
 def create_delete_keyboard(expenses):
     markup = InlineKeyboardMarkup()
     for exp in expenses:
         btn = InlineKeyboardButton(
-            f"❌ {exp[0]} ₽ - {exp[1]} ({exp[2]})",
-            callback_data=f"delete_{exp[3]}"
+            f"❌ {exp[0]} ₽ — {exp[1]}",
+            callback_data=f"del_{exp[3]}"
         )
         markup.add(btn)
     return markup
+
+# ==================== АВТОУДАЛЕНИЕ ====================
+
+def delete_later(chat_id, message_id, delay=10):
+    def _delete():
+        try:
+            time.sleep(delay)
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+    threading.Thread(target=_delete, daemon=True).start()
 
 # ==================== КОМАНДЫ ====================
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, 
-                 "👋 Привет! Я твой финансовый помощник 💰\n\n"
-                 "📌 Просто напиши сумму и описание:\n"
-                 "`500 обед`\n"
-                 "`1200 такси`\n\n"
-                 "Используй кнопки ниже 👇",
-                 reply_markup=create_main_keyboard(),
-                 parse_mode='Markdown')
+    welcome_text = """
+💰 *Добро пожаловать!*
+
+Я помогу тебе учитывать траты.
+
+📝 *Как пользоваться:*
+• Просто напиши сумму и описание
+• Пример: `500 обед` или `150 такси`
+
+📌 *Команды:*
+• /start — перезапустить
+• /help — помощь
+"""
+    bot.reply_to(message, welcome_text, parse_mode='Markdown', reply_markup=create_main_keyboard())
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    help_text = """
+📖 *Помощь:*
+
+Добавление траты:
+`500 кофе` → добавит 500 ₽ (категория Еда)
+
+Кнопки:
+📊 Итоги — посмотреть общую сумму
+📜 История — история за период
+🗑️ Удалить — удалить запись
+🗑️ Сбросить — удалить всё
+"""
+    bot.send_message(message.chat.id, help_text, parse_mode='Markdown', reply_markup=create_main_keyboard())
+
+@bot.message_handler(func=lambda message: message.text == "🔙 Назад")
+def go_back(message):
+    bot.send_message(message.chat.id, "Выбери действие:", reply_markup=create_main_keyboard())
 
 # ==================== ИТОГИ ====================
 
-@bot.message_handler(func=lambda message: message.text == "📊 Итоги сегодня")
-def stats_today(message):
-    today = datetime.now().strftime("%Y-%m-%d")
-    show_stats(message, today, "За сегодня")
-
-@bot.message_handler(func=lambda message: message.text == "📊 Итоги месяц")
-def stats_month(message):
-    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    show_stats(message, month_ago, "За месяц")
-
-@bot.message_handler(func=lambda message: message.text == "📊 Итоги всего")
-def stats_all(message):
-    show_stats(message, "1900-01-01", "За всё время")
-
-def show_stats(message, date_from, period_name):
+@bot.message_handler(func=lambda message: message.text == "📊 Итоги")
+def show_stats(message):
     conn = sqlite3.connect('expenses.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT SUM(amount) FROM expenses WHERE date >= ?', (date_from,))
-    total = cursor.fetchone()[0]
-    if total is None: total = 0
-    cursor.execute('SELECT category, SUM(amount) FROM expenses WHERE date >= ? GROUP BY category', (date_from,))
+    cursor.execute('SELECT SUM(amount) FROM expenses')
+    total = cursor.fetchone()[0] or 0
+    cursor.execute('SELECT category, SUM(amount) FROM expenses GROUP BY category ORDER BY SUM(amount) DESC')
     categories = cursor.fetchall()
     conn.close()
 
-    text = f"💰 Итог ({period_name}): {total:.2f} ₽\n\n"
-    text += "📊 По категориям:\n"
-    categories.sort(key=lambda x: x[1] or 0, reverse=True)
+    if total == 0:
+        bot.send_message(message.chat.id, "📊 Пока нет трат 🤷", reply_markup=create_main_keyboard())
+        return
+
+    text = f"💰 *Итого: {total:.2f} ₽*\n\n"
+    text += "*По категориям:*\n"
+    
     for cat, amount in categories:
-        text += f"▫️ {cat}: {amount:.2f} ₽\n"
+        percent = (amount / total) * 100
+        bar = "▓" * int(percent / 5)
+        text += f"{cat}: {amount:.2f} ₽\n{bar} {percent:.0f}%\n\n"
+    
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_main_keyboard())
 
 # ==================== ИСТОРИЯ ====================
 
-@bot.message_handler(func=lambda message: message.text == "📜 История сегодня")
+@bot.message_handler(func=lambda message: message.text == "📜 История")
+def history_menu(message):
+    bot.send_message(message.chat.id, "📜 Выбери период:", reply_markup=create_period_keyboard())
+
+@bot.message_handler(func=lambda message: message.text == "📅 Сегодня")
 def history_today(message):
     today = datetime.now().strftime("%Y-%m-%d")
-    show_history(message, today, "За сегодня")
+    show_history(message, today, "Сегодня")
 
-@bot.message_handler(func=lambda message: message.text == "📜 История неделя")
+@bot.message_handler(func=lambda message: message.text == "📆 Неделя")
 def history_week(message):
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    show_history(message, week_ago, "За неделю")
+    show_history(message, week_ago, "Неделя")
 
-@bot.message_handler(func=lambda message: message.text == "📜 История месяц")
+@bot.message_handler(func=lambda message: message.text == "📆 Месяц")
 def history_month(message):
     month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    show_history(message, month_ago, "За месяц")
+    show_history(message, month_ago, "Месяц")
 
-@bot.message_handler(func=lambda message: message.text == "📜 История всё")
+@bot.message_handler(func=lambda message: message.text == "📋 Всё")
 def history_all(message):
-    show_history(message, "1900-01-01", "За всё время")
+    show_history(message, "1900-01-01", "Всё время")
 
 def show_history(message, date_from, period_name):
     conn = sqlite3.connect('expenses.db')
@@ -162,79 +182,22 @@ def show_history(message, date_from, period_name):
     conn.close()
     
     if not expenses:
-        bot.send_message(message.chat.id, f"📜 История ({period_name}):\n\nЗаписей не найдено.", reply_markup=create_main_keyboard())
+        bot.send_message(message.chat.id, f"📜 Нет записей за {period_name} 😔", reply_markup=create_period_keyboard())
         return
     
-    text = f"📜 История ({period_name}):\n\n"
+    text = f"📜 *История за {period_name}:*\n\n"
     total = 0
     for exp in expenses:
         amount, desc, cat, id_ = exp
         total += amount
-        text += f"• {amount:.2f} ₽ — {desc} ({cat})\n"
+        text += f"• {amount:.2f} ₽ — {desc} {cat}\n"
     
-    text += f"\n💰 Итого: {total:.2f} ₽"
-    bot.send_message(message.chat.id, text, reply_markup=create_main_keyboard())
-
-# ==================== ОТЧЁТ ====================
-
-@bot.message_handler(func=lambda message: message.text == "📄 Отчёт сегодня")
-def report_today(message):
-    today = datetime.now().strftime("%Y-%m-%d")
-    send_report(message, today, "За сегодня")
-
-@bot.message_handler(func=lambda message: message.text == "📄 Отчёт неделя")
-def report_week(message):
-    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    send_report(message, week_ago, "За неделю")
-
-@bot.message_handler(func=lambda message: message.text == "📄 Отчёт месяц")
-def report_month(message):
-    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    send_report(message, month_ago, "За месяц")
-
-@bot.message_handler(func=lambda message: message.text == "📄 Отчёт всё")
-def report_all(message):
-    send_report(message, "1900-01-01", "За всё время")
-
-def send_report(message, date_from, period_name):
-    bot.send_message(message.chat.id, "⏳ Генерирую отчёт...", reply_markup=create_main_keyboard())
-    
-    try:
-        conn = sqlite3.connect('expenses.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT amount, description, category, date FROM expenses WHERE date >= ? ORDER BY id DESC', (date_from,))
-        expenses = cursor.fetchall()
-        cursor.execute('SELECT category, SUM(amount) FROM expenses WHERE date >= ? GROUP BY category', (date_from,))
-        categories = cursor.fetchall()
-        conn.close()
-        
-        if not expenses:
-            bot.send_message(message.chat.id, "❌ Нет данных за этот период.", reply_markup=create_main_keyboard())
-            return
-        
-        total = sum(e[0] for e in expenses)
-        
-        text = f"📊 **{period_name}**\n\n"
-        text += f"💰 **Общая сумма: {total:.2f} ₽**\n\n"
-        text += "📈 **По категориям:**\n"
-        
-        for cat, amount in categories:
-            percent = (amount / total) * 100
-            bar = "▓" * int(percent / 5) + "░" * (20 - int(percent / 5))
-            text += f"{cat}: {amount:.2f} ₽ ({percent:.1f}%)\n{bar}\n\n"
-        
-        text += "📝 **Последние траты:**\n"
-        for exp in expenses[:15]:
-            text += f"• {exp[0]:.2f} ₽ — {exp[1]} ({exp[2]})\n"
-        
-        bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_main_keyboard())
-        
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}", reply_markup=create_main_keyboard())
+    text += f"\n💰 *Итого: {total:.2f} ₽*"
+    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_period_keyboard())
 
 # ==================== УДАЛЕНИЕ ====================
 
-@bot.message_handler(func=lambda message: message.text == "🗑️ Удалить трату")
+@bot.message_handler(func=lambda message: message.text == "🗑️ Удалить")
 def delete_menu(message):
     conn = sqlite3.connect('expenses.db')
     cursor = conn.cursor()
@@ -243,33 +206,32 @@ def delete_menu(message):
     conn.close()
     
     if not expenses:
-        bot.send_message(message.chat.id, "Нет записей для удаления.", reply_markup=create_main_keyboard())
+        bot.send_message(message.chat.id, "Нет записей для удаления 🤷", reply_markup=create_main_keyboard())
         return
     
-    text = "🗑️ Выбери запись для удаления:\n"
-    markup = create_delete_keyboard(expenses)
-    bot.send_message(message.chat.id, text, reply_markup=markup)
+    text = "🗑️ *Выбери запись:*\n"
+    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_delete_keyboard(expenses))
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('del_'))
 def delete_expense(call):
     try:
         expense_id = int(call.data.split('_')[1])
-        
         conn = sqlite3.connect('expenses.db')
         cursor = conn.cursor()
         cursor.execute('DELETE FROM expenses WHERE id = ?', (expense_id,))
         conn.commit()
         conn.close()
         
-        bot.answer_callback_query(call.id, "✅ Запись удалена!")
-        bot.send_message(call.message.chat.id, "✅ Запись удалена!", reply_markup=create_main_keyboard())
+        bot.answer_callback_query(call.id, "✅ Удалено!")
+        delete_later(call.message.chat_id, call.message.message_id, delay=5)
+        bot.send_message(call.message.chat_id, "✅ Запись удалена!", reply_markup=create_main_keyboard())
     except Exception as e:
         bot.answer_callback_query(call.id, f"Ошибка: {str(e)}")
 
 # ==================== СБРОС ====================
 
-@bot.message_handler(func=lambda message: message.text == "🗑️ Сбросить всё")
-def clear_all_button(message):
+@bot.message_handler(func=lambda message: message.text == "🗑️ Сбросить")
+def clear_all(message):
     conn = sqlite3.connect('expenses.db')
     cursor = conn.cursor()
     cursor.execute('DELETE FROM expenses')
@@ -281,12 +243,8 @@ def clear_all_button(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_expense(message):
-    ignore_list = [
-        "📊 Итоги сегодня", "📊 Итоги месяц", "📊 Итоги всего",
-        "📜 История сегодня", "📜 История неделя", "📜 История месяц", "📜 История всё",
-        "📄 Отчёт сегодня", "📄 Отчёт неделя", "📄 Отчёт месяц", "📄 Отчёт всё",
-        "🗑️ Удалить трату", "🗑️ Сбросить всё"
-    ]
+    ignore_list = ["📊 Итоги", "📜 История", "🗑️ Удалить", "🗑️ Сбросить",
+                   "📅 Сегодня", "📆 Неделя", "📆 Месяц", "📋 Всё", "🔙 Назад"]
     
     if message.text in ignore_list:
         return
@@ -306,13 +264,15 @@ def handle_expense(message):
         conn.commit()
         conn.close()
         
-        bot.reply_to(message, 
-                     f"✅ Записал: *{amount:.2f} ₽*\nКатегория: `{category}`", 
-                     parse_mode='Markdown',
-                     reply_markup=create_main_keyboard())
-    except Exception as e:
-        bot.reply_to(message, "❌ Ошибка! Пиши: сумма описание\nПример: 500 такси", 
-                     reply_markup=create_main_keyboard())
+        # Подтверждение и автоудаление
+        msg = bot.reply_to(message, f"✅ *Добавлено:* {amount:.2f} ₽\n{category}", 
+                     parse_mode='Markdown', reply_markup=create_main_keyboard())
+        
+        delete_later(message.chat_id, message.message_id, delay=10)
+        delete_later(message.chat_id, msg.message_id, delay=10)
+        
+    except:
+        pass  # Игнорируем ошибки (не трата)
 
 # ==================== ЗАПУСК ====================
 
