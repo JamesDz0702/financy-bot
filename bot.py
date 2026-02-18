@@ -3,14 +3,24 @@ import telebot
 import sqlite3
 from datetime import datetime, timedelta
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.graphics.shapes import Drawing, Rect, String
+from reportlab.graphics.charts.barcharts import VerticalBarChart
+from reportlab.graphics import renderPDF
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 import matplotlib.pyplot as plt
-from io import BytesIO
+import matplotlib
+matplotlib.use('Agg')
+import io
 
 API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(API_TOKEN)
 
-# ==================== БАЗА ДАННЫХ ====================
-
+# --- База данных ---
 def init_db():
     conn = sqlite3.connect('expenses.db')
     cursor = conn.cursor()
@@ -28,16 +38,14 @@ def init_db():
 
 init_db()
 
-# ==================== КАТЕГОРИИ ====================
-
+# --- Категории ---
 CATEGORY_KEYWORDS = {
-    'Еда': ['еда', 'обед', 'ужин', 'завтрак', 'продукты', 'магазин', 'кофе', 'пицца', 'суши'],
-    'Транспорт': ['такси', 'метро', 'автобус', 'бензин', 'машина', 'uber', 'bolt'],
-    'Дом': ['аренда', 'коммуналка', 'интернет', 'ремонт', 'мебель'],
-    'Развлечения': ['кино', 'бар', 'клуб', 'подписка', 'игры', 'концерт'],
-    'Здоровье': ['аптека', 'врач', 'лекарства', 'стоматолог', 'спортзал'],
-    'Связь': ['телефон', 'мтс', 'билайн', 'мегафон'],
-    'Покупки': ['одежда', 'обувь', 'техника', 'подарок'],
+    'Еда': ['еда', 'обед', 'ужин', 'завтрак', 'продукты', 'магазин', 'кофе'],
+    'Транспорт': ['такси', 'метро', 'автобус', 'бензин', 'машина'],
+    'Дом': ['аренда', 'коммуналка', 'интернет', 'ремонт'],
+    'Развлечения': ['кино', 'бар', 'клуб', 'подписка'],
+    'Здоровье': ['аптека', 'врач', 'лекарства'],
+    'Связь': ['телефон', 'мтс', 'билайн'],
 }
 
 def get_category(text):
@@ -48,246 +56,434 @@ def get_category(text):
                 return category
     return 'Разное'
 
-# ==================== КЛАВИАТУРЫ ====================
-
+# --- Главная клавиатура ---
 def create_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     btn_stats = KeyboardButton("📊 Посмотреть итоги")
-    btn_history = KeyboardButton("📜 История")
-    btn_pdf = KeyboardButton("📄 PDF-отчёт")
-    btn_delete = KeyboardButton("🗑️ Удалить трату")
+    btn_history = KeyboardButton("📜 История трат")
+    btn_pdf = KeyboardButton("📄 PDF отчёт")
     btn_clear = KeyboardButton("🗑️ Сбросить данные")
     markup.add(btn_stats, btn_history)
-    markup.add(btn_pdf, btn_delete)
-    markup.add(btn_clear)
+    markup.add(btn_pdf, btn_clear)
     return markup
 
-def create_history_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add(KeyboardButton("📅 За сегодня"), KeyboardButton("📆 За неделю"))
-    markup.add(KeyboardButton("📆 За месяц"), KeyboardButton("📋 За всё время"))
-    markup.add(KeyboardButton("🔙 Назад"))
-    return markup
-
-def create_period_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add(KeyboardButton("📅 За сегодня"), KeyboardButton("📆 За неделю"))
-    markup.add(KeyboardButton("📆 За месяц"), KeyboardButton("📋 За всё время"))
-    markup.add(KeyboardButton("🔙 Назад"))
-    return markup
-
-def create_delete_keyboard(expenses):
+# --- Клавиатура для выбора периода ---
+def create_period_keyboard(action):
     markup = InlineKeyboardMarkup()
-    for exp in expenses:
-        btn = InlineKeyboardButton(
-            f"❌ {exp[0]} ₽ - {exp[1]} ({exp[2]})",
-            callback_data=f"delete_{exp[3]}"
-        )
-        markup.add(btn)
+    btn_today = InlineKeyboardButton("📅 Сегодня", callback_data=f"{action}_today")
+    btn_week = InlineKeyboardButton("📅 Неделя", callback_data=f"{action}_week")
+    btn_month = InlineKeyboardButton("📅 Месяц", callback_data=f"{action}_month")
+    btn_all = InlineKeyboardButton("📅 Всё время", callback_data=f"{action}_all")
+    markup.add(btn_today, btn_week)
+    markup.add(btn_month, btn_all)
     return markup
 
-# ==================== КОМАНДЫ ====================
+# --- Получить даты для периода ---
+def get_date_range(period):
+    now = datetime.now()
+    if period == 'today':
+        start = now.replace(hour=0, minute=0, second=0)
+        return start.strftime("%Y-%m-%d %H:%M"), now.strftime("%Y-%m-%d %H:%M"), "Сегодня"
+    elif period == 'week':
+        start = now - timedelta(days=7)
+        return start.strftime("%Y-%m-%d %H:%M"), now.strftime("%Y-%m-%d %H:%M"), "За неделю"
+    elif period == 'month':
+        start = now - timedelta(days=30)
+        return start.strftime("%Y-%m-%d %H:%M"), now.strftime("%Y-%m-%d %H:%M"), "За месяц"
+    else:
+        return "2000-01-01 00:00", now.strftime("%Y-%m-%d %H:%M"), "За всё время"
 
+# --- Получить траты за период ---
+def get_expenses_by_period(period):
+    start, end, label = get_date_range(period)
+    conn = sqlite3.connect('expenses.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, amount, description, category, date FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date DESC', (start, end))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows, label
+
+# --- Создать PDF с графиком ---
+def create_pdf_report(period):
+    rows, label = get_expenses_by_period(period)
+
+    if not rows:
+        return None
+
+    # Собираем данные по категориям
+    categories = {}
+    total = 0
+    for row in rows:
+        cat = row[3]
+        amount = row[1]
+        categories[cat] = categories.get(cat, 0) + amount
+        total += amount
+
+    # --- Создаём график через matplotlib ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.patch.set_facecolor('#f8f9fa')
+
+    # График 1: Круговая диаграмма
+    cat_names = list(categories.keys())
+    cat_values = list(categories.values())
+    colors_list = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD']
+
+    ax1.pie(cat_values,
+            labels=cat_names,
+            autopct='%1.1f%%',
+            colors=colors_list[:len(cat_names)],
+            startangle=90)
+    ax1.set_title(f'Распределение трат\n{label}', fontsize=14, fontweight='bold', pad=20)
+
+    # График 2: Столбчатая диаграмма
+    bars = ax2.bar(cat_names, cat_values, color=colors_list[:len(cat_names)], width=0.6)
+    ax2.set_title(f'Суммы по категориям\n{label}', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Сумма (₽)', fontsize=12)
+    ax2.set_facecolor('#f8f9fa')
+
+    # Подписи на столбцах
+    for bar, value in zip(bars, cat_values):
+        ax2.text(bar.get_x() + bar.get_width() / 2.,
+                 bar.get_height() + max(cat_values) * 0.01,
+                 f'{value:.0f}₽',
+                 ha='center', va='bottom', fontweight='bold')
+
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+
+    # Сохраняем график в буфер
+    chart_buffer = io.BytesIO()
+    plt.savefig(chart_buffer, format='png', dpi=150, bbox_inches='tight')
+    chart_buffer.seek(0)
+    plt.close()
+
+    # --- Создаём PDF ---
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4,
+                            rightMargin=30, leftMargin=30,
+                            topMargin=30, bottomMargin=30)
+
+    story = []
+    styles = getSampleStyleSheet()
+
+    # Заголовок
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Title'],
+        fontSize=20,
+        spaceAfter=10,
+        textColor=colors.HexColor('#2C3E50')
+    )
+
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Normal'],
+        fontSize=12,
+        spaceAfter=20,
+        textColor=colors.HexColor('#7F8C8D')
+    )
+
+    story.append(Paragraph("Финансовый отчёт", title_style))
+    story.append(Paragraph(f"{label} | Создан: {datetime.now().strftime('%d.%m.%Y %H:%M')}", subtitle_style))
+    story.append(Spacer(1, 10))
+
+    # Общая сумма
+    total_style = ParagraphStyle(
+        'Total',
+        parent=styles['Normal'],
+        fontSize=16,
+        spaceAfter=20,
+        textColor=colors.HexColor('#27AE60'),
+        fontName='Helvetica-Bold'
+    )
+    story.append(Paragraph(f"Общая сумма трат: {total:.2f} руб.", total_style))
+    story.append(Spacer(1, 10))
+
+    # Таблица по категориям
+    table_data = [['Категория', 'Сумма (руб.)', 'Доля (%)']]
+    for cat, amount in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        percent = (amount / total * 100) if total > 0 else 0
+        table_data.append([cat, f"{amount:.2f}", f"{percent:.1f}%"])
+
+    # Итоговая строка
+    table_data.append(['ИТОГО', f"{total:.2f}", "100%"])
+
+    table = Table(table_data, colWidths=[200, 150, 100])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2C3E50')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#ECF0F1')]),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#27AE60')),
+        ('TEXTCOLOR', (0, -1), (-1, -1), colors.white),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#BDC3C7')),
+        ('ROWHEIGHT', (0, 0), (-1, -1), 25),
+    ]))
+
+    story.append(table)
+    story.append(Spacer(1, 20))
+
+    # Вставляем график
+    from reportlab.platypus import Image as RLImage
+    chart_buffer.seek(0)
+    img = RLImage(chart_buffer, width=500, height=210)
+    story.append(img)
+    story.append(Spacer(1, 20))
+
+    # Таблица всех трат
+    story.append(Paragraph("Детализация трат:", ParagraphStyle(
+        'SectionTitle',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#2C3E50'),
+        spaceAfter=10
+    )))
+
+    detail_data = [['#', 'Дата', 'Описание', 'Категория', 'Сумма (руб.)']]
+    for i, row in enumerate(rows, 1):
+        detail_data.append([
+            str(i),
+            row[4][:10],
+            row[2][:30],
+            row[3],
+            f"{row[1]:.2f}"
+        ])
+
+    detail_table = Table(detail_data, colWidths=[30, 80, 180, 100, 80])
+    detail_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495E')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#ECF0F1')]),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#BDC3C7')),
+        ('ROWHEIGHT', (0, 0), (-1, -1), 20),
+    ]))
+
+    story.append(detail_table)
+
+    # Строим PDF
+    doc.build(story)
+    pdf_buffer.seek(0)
+    return pdf_buffer
+
+# --- Команда /start ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, 
-                 "👋 Привет! Я твой финансовый помощник 💰\n\n"
-                 "📌 Просто напиши сумму и описание:\n"
+    bot.reply_to(message,
+                 "Привет! Я твой финансовый помощник!\n\n"
+                 "Напиши сумму и описание:\n"
                  "`500 обед`\n"
                  "`1200 такси`\n\n"
                  "Используй кнопки ниже 👇",
                  reply_markup=create_main_keyboard(),
                  parse_mode='Markdown')
 
-# Обработка кнопки "Назад"
-@bot.message_handler(func=lambda message: message.text == "🔙 Назад")
-def go_back(message):
-    bot.send_message(message.chat.id, "Главное меню:", reply_markup=create_main_keyboard())
-
-# ==================== ИСТОРИЯ ====================
-
-@bot.message_handler(func=lambda message: message.text == "📜 История")
-def history_menu(message):
-    bot.send_message(message.chat.id, "📜 Выбери период:", reply_markup=create_history_keyboard())
-
-@bot.message_handler(func=lambda message: message.text == "📅 За сегодня")
-def history_today(message):
-    today = datetime.now().strftime("%Y-%m-%d")
-    show_history(message, today, "За сегодня")
-
-@bot.message_handler(func=lambda message: message.text == "📆 За неделю")
-def history_week(message):
-    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    show_history(message, week_ago, "За последние 7 дней")
-
-@bot.message_handler(func=lambda message: message.text == "📆 За месяц")
-def history_month(message):
-    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    show_history(message, month_ago, "За последние 30 дней")
-
-@bot.message_handler(func=lambda message: message.text == "📋 За всё время")
-def history_all(message):
-    show_history(message, "1900-01-01", "За всё время")
-
-def show_history(message, date_from, period_name):
-    conn = sqlite3.connect('expenses.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT amount, description, category, id FROM expenses WHERE date >= ? ORDER BY id DESC', (date_from,))
-    expenses = cursor.fetchall()
-    conn.close()
-    
-    if not expenses:
-        bot.send_message(message.chat.id, f"📜 История ({period_name}):\n\nЗаписей не найдено.", reply_markup=create_history_keyboard())
-        return
-    
-    text = f"📜 История ({period_name}):\n\n"
-    total = 0
-    for exp in expenses:
-        amount, desc, cat, id_ = exp
-        total += amount
-        text += f"• {amount:.2f} ₽ — {desc} ({cat})\n"
-    
-    text += f"\n💰 Итого: {total:.2f} ₽"
-    bot.send_message(message.chat.id, text, reply_markup=create_history_keyboard())
-
-# ==================== PDF-ОТЧЁТ ====================
-
-@bot.message_handler(func=lambda message: message.text == "📄 PDF-отчёт")
-def pdf_menu(message):
-    bot.send_message(message.chat.id, "📄 Выбери период для отчёта:", reply_markup=create_period_keyboard())
-
-def generate_chart_and_report(date_from, period_name):
-    conn = sqlite3.connect('expenses.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT amount, description, category, date FROM expenses WHERE date >= ? ORDER BY id DESC', (date_from,))
-    expenses = cursor.fetchall()
-    cursor.execute('SELECT category, SUM(amount) FROM expenses WHERE date >= ? GROUP BY category', (date_from,))
-    categories = cursor.fetchall()
-    conn.close()
-    
-    if not expenses:
-        return None, None
-    
-    # Создаём график
-    labels = [c[0] for c in categories]
-    values = [c[1] for c in categories]
-    
-    plt.figure(figsize=(8, 6))
-    plt.pie(values, labels=labels, autopct='%1.1f%%', startangle=90)
-    plt.title(f'Траты ({period_name})')
-    
-    # Сохраняем график в память
-    img_buffer = BytesIO()
-    plt.savefig(img_buffer, format='png', bbox_inches='tight')
-    img_buffer.seek(0)
-    plt.close()
-    
-    # Создаём текст отчёта
-    total = sum(e[0] for e in expenses)
-    text = f"📄 **{period_name}**\n\n"
-    text += f"💰 *Общая сумма: {total:.2f} ₽*\n\n"
-    text += "*По категориям:*\n"
-    for cat, amount in categories:
-        text += f"• {cat}: {amount:.2f} ₽\n"
-    
-    text += "\n*Детализация:*\n"
-    for exp in expenses:
-        text += f"• {exp[0]:.2f} ₽ — {exp[1]} ({exp[3]})\n"
-    
-    return img_buffer, text
-
-@bot.message_handler(func=lambda message: message.text == "📅 За сегодня")
-def pdf_today(message):
-    today = datetime.now().strftime("%Y-%m-%d")
-    send_pdf_report(message, today, "За сегодня")
-
-@bot.message_handler(func=lambda message: message.text == "📆 За неделю")
-def pdf_week(message):
-    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    send_pdf_report(message, week_ago, "За неделю")
-
-@bot.message_handler(func=lambda message: message.text == "📆 За месяц")
-def pdf_month(message):
-    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    send_pdf_report(message, month_ago, "За месяц")
-
-@bot.message_handler(func=lambda message: message.text == "📋 За всё время")
-def pdf_all(message):
-    send_pdf_report(message, "1900-01-01", "За всё время")
-
-def send_pdf_report(message, date_from, period_name):
-    img_buffer, text = generate_chart_and_report(date_from, period_name)
-    
-    if img_buffer is None:
-        bot.send_message(message.chat.id, "Нет данных за выбранный период.", reply_markup=create_period_keyboard())
-        return
-    
-    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_period_keyboard())
-    bot.send_photo(message.chat.id, img_buffer, reply_markup=create_period_keyboard())
-
-# ==================== УДАЛЕНИЕ ТРАТ ====================
-
-@bot.message_handler(func=lambda message: message.text == "🗑️ Удалить трату")
-def delete_menu(message):
-    conn = sqlite3.connect('expenses.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT amount, description, category, id FROM expenses ORDER BY id DESC LIMIT 10')
-    expenses = cursor.fetchall()
-    conn.close()
-    
-    if not expenses:
-        bot.send_message(message.chat.id, "Нет записей для удаления.", reply_markup=create_main_keyboard())
-        return
-    
-    text = "🗑️ Выбери запись для удаления:\n\n"
-    markup = create_delete_keyboard(expenses)
-    bot.send_message(message.chat.id, text, reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_'))
-def delete_expense(call):
-    expense_id = int(call.data.split('_')[1])
-    
-    conn = sqlite3.connect('expenses.db')
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM expenses WHERE id = ?', (expense_id,))
-    conn.commit()
-    conn.close()
-    
-    bot.answer_callback_query(call.id, "✅ Запись удалена!")
-    bot.send_message(call.message.chat.id, "✅ Запись удалена. Выбери ещё:", reply_markup=create_main_keyboard())
-
-# ==================== ИТОГИ ====================
-
+# --- Кнопка "Статистика" ---
 @bot.message_handler(func=lambda message: message.text == "📊 Посмотреть итоги")
 def show_stats_button(message):
-    conn = sqlite3.connect('expenses.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT SUM(amount) FROM expenses')
-    total = cursor.fetchone()[0]
-    if total is None: total = 0
-    cursor.execute('SELECT category, SUM(amount) FROM expenses GROUP BY category')
-    categories = cursor.fetchall()
-    conn.close()
+    bot.send_message(message.chat.id,
+                     "Выбери период:",
+                     reply_markup=create_period_keyboard('stats'))
 
-    text = f"💰 Общий итог: {total:.2f} ₽\n\nПо категориям:\n"
-    categories.sort(key=lambda x: x[1] or 0, reverse=True)
-    for cat, amount in categories:
-        text += f"▫️ {cat}: {amount:.2f} ₽\n"
-    bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_main_keyboard())
+# --- Кнопка "История" ---
+@bot.message_handler(func=lambda message: message.text == "📜 История трат")
+def show_history_button(message):
+    bot.send_message(message.chat.id,
+                     "Выбери период:",
+                     reply_markup=create_period_keyboard('history'))
 
-# ==================== СБРОС ====================
+# --- Кнопка "PDF отчёт" ---
+@bot.message_handler(func=lambda message: message.text == "📄 PDF отчёт")
+def show_pdf_button(message):
+    bot.send_message(message.chat.id,
+                     "Выбери период для PDF отчёта:",
+                     reply_markup=create_period_keyboard('pdf'))
 
+# --- Кнопка "Сбросить данные" ---
 @bot.message_handler(func=lambda message: message.text == "🗑️ Сбросить данные")
 def clear_all_button(message):
-    conn = sqlite3.connect('expenses.db')
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM expenses')
-    conn.commit()
-    conn.close()
-    bot.send_message(message.chat.id, "🗑️ Все записи удалены!", reply_markup=create_main_keyboard())
+    markup = InlineKeyboardMarkup()
+    btn_yes = InlineKeyboardButton("✅ Да, удалить всё", callback_data="confirm_clear")
+    btn_no = InlineKeyboardButton("❌ Отмена", callback_data="cancel_clear")
+    markup.add(btn_yes, btn_no)
+    bot.send_message(message.chat.id,
+                     "⚠️ Ты уверен? Это удалит ВСЕ записи!",
+                     reply_markup=markup)
 
-# ==================== ДОБАВЛЕНИЕ ТРАТ ====================
+# --- Обработка callback кнопок ---
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    data = call.data
 
+    # --- Статистика по периоду ---
+    if data.startswith('stats_'):
+        period = data.replace('stats_', '')
+        rows, label = get_expenses_by_period(period)
+
+        if not rows:
+            bot.edit_message_text("За этот период трат нет!",
+                                  call.message.chat.id,
+                                  call.message.message_id)
+            return
+
+        categories = {}
+        total = 0
+        for row in rows:
+            cat = row[3]
+            amount = row[1]
+            categories[cat] = categories.get(cat, 0) + amount
+            total += amount
+
+        text = f"📊 **{label}**\n\n"
+        text += f"💰 **Итого: {total:.2f} ₽**\n\n"
+        text += "**По категориям:**\n"
+
+        categories_sorted = sorted(categories.items(), key=lambda x: x[1], reverse=True)
+        max_amount = max(categories.values())
+
+        for cat, amount in categories_sorted:
+            bar_length = int((amount / max_amount) * 10)
+            bar = '█' * bar_length + '░' * (10 - bar_length)
+            text += f"{bar} {cat}: {amount:.2f} ₽\n"
+
+        bot.edit_message_text(text,
+                              call.message.chat.id,
+                              call.message.message_id,
+                              parse_mode='Markdown')
+
+    # --- История по периоду ---
+    elif data.startswith('history_'):
+        period = data.replace('history_', '')
+        rows, label = get_expenses_by_period(period)
+
+        if not rows:
+            bot.edit_message_text("За этот период трат нет!",
+                                  call.message.chat.id,
+                                  call.message.message_id)
+            return
+
+        # Показываем по 5 записей с кнопками удаления
+        markup = InlineKeyboardMarkup()
+        text = f"📜 **История: {label}**\n\n"
+
+        for row in rows[:10]:
+            expense_id = row[0]
+            amount = row[1]
+            description = row[2]
+            category = row[3]
+            date = row[4][:10]
+            text += f"🔹 `#{expense_id}` {date} — {description} ({category}): **{amount:.2f} ₽**\n"
+
+            btn_delete = InlineKeyboardButton(
+                f"❌ Удалить #{expense_id}",
+                callback_data=f"delete_{expense_id}"
+            )
+            markup.add(btn_delete)
+
+        bot.edit_message_text(text,
+                              call.message.chat.id,
+                              call.message.message_id,
+                              parse_mode='Markdown',
+                              reply_markup=markup)
+
+    # --- Удаление конкретной траты ---
+    elif data.startswith('delete_'):
+        expense_id = int(data.replace('delete_', ''))
+
+        conn = sqlite3.connect('expenses.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT amount, description, category FROM expenses WHERE id = ?', (expense_id,))
+        row = cursor.fetchone()
+
+        if row:
+            cursor.execute('DELETE FROM expenses WHERE id = ?', (expense_id,))
+            conn.commit()
+            conn.close()
+            bot.answer_callback_query(call.id, f"Трата #{expense_id} удалена!")
+            bot.edit_message_text(
+                f"✅ Удалена трата:\n"
+                f"**{row[0]:.2f} ₽** — {row[1]} ({row[2]})\n\n"
+                f"Нажми 📜 История трат чтобы посмотреть остальные",
+                call.message.chat.id,
+                call.message.message_id,
+                parse_mode='Markdown'
+            )
+        else:
+            conn.close()
+            bot.answer_callback_query(call.id, "Трата не найдена!")
+
+    # --- PDF по периоду ---
+    elif data.startswith('pdf_'):
+        period = data.replace('pdf_', '')
+        bot.edit_message_text("⏳ Генерирую PDF отчёт, подожди...",
+                              call.message.chat.id,
+                              call.message.message_id)
+
+        pdf_buffer = create_pdf_report(period)
+
+        if pdf_buffer is None:
+            bot.send_message(call.message.chat.id, "За этот период трат нет!")
+            return
+
+        _, label = get_date_range(period)
+        filename = f"report_{period}_{datetime.now().strftime('%d%m%Y')}.pdf"
+
+        bot.send_document(
+            call.message.chat.id,
+            (filename, pdf_buffer),
+            caption=f"📄 PDF отчёт: {label}"
+        )
+
+    # --- Подтверждение удаления всех данных ---
+    elif data == 'confirm_clear':
+        conn = sqlite3.connect('expenses.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM expenses')
+        conn.commit()
+        conn.close()
+        bot.edit_message_text("🗑️ Все данные удалены!",
+                              call.message.chat.id,
+                              call.message.message_id)
+
+    elif data == 'cancel_clear':
+        bot.edit_message_text("❌ Удаление отменено",
+                              call.message.chat.id,
+                              call.message.message_id)
+
+# --- Обработка трат ---
 @bot.message_handler(func=lambda message: True)
 def handle_expense(message):
-    if message.text in ["📊 Посмотреть итоги", "📜 История", "📄 PDF-отчёт", 
+    if message.text in ["📊 Посмотреть итоги", "📜 История трат", "📄 PDF отчёт", "🗑️ Сбросить данные"]:
+        return
+
+    try:
+        text = message.text.strip()
+        parts = text.split()
+        amount = float(parts[0])
+        description = " ".join(parts[1:]) if len(parts) > 1 else "Без описания"
+        category = get_category(description)
+        date_now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        conn = sqlite3.connect('expenses.db')
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO expenses (amount, description, category, date) VALUES (?, ?, ?, ?)',
+                       (amount, description, category, date_now))
+        conn.commit()
+        conn.close()
+
+        bot.reply_to(message,
+                     f"✅ Записал: *{amount:.2f} ₽*\nКатегория: `{category}`",
+                     parse_mode='Markdown',
+                     reply_markup=create_main_keyboard())
+    except Exception as e:
+        bot.reply_to(message,
+                     "❌ Ошибка! Пиши: сумма описание\nПример: `500 такси`",
+                     reply_markup=create_main_keyboard())
+
+print("Running bot...")
+bot.infinity_polling()
