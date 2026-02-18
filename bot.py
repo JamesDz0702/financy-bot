@@ -1,17 +1,13 @@
 import os
 import telebot
 import sqlite3
+import io
 from datetime import datetime, timedelta
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')
-import io
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.platypus import Image as RLImage
 
 API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 bot = telebot.TeleBot(API_TOKEN)
@@ -567,4 +563,5 @@ def handle_expense(message):
 
 print("Running bot...")
 bot.infinity_polling()
+
 
