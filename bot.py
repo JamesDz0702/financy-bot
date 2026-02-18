@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-API_TOKEN = os.environ.get('7837710546:AAHwPszhQamT8e6FPvBRqb2gwwYTH_oUd-Y')
+API_TOKEN = os.environ.get('API_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')')
 # ВСТАВЬ СЮДА СВОЙ ТОКЕН (получи у @BotFather)
   # ЗАМЕНИ НА СВОЙ!
 bot = telebot.TeleBot(API_TOKEN)
@@ -134,3 +134,4 @@ def handle_expense(message):
 # Запуск бота
 print("🚀 Бот запущен и готов принимать траты!")
 bot.infinity_polling()
+
