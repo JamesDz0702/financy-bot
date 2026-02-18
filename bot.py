@@ -112,23 +112,84 @@ def get_expenses_by_period(period):
     return rows, label
 
 # --- Создать PDF ---
-def create_pdf_report(period):
-    rows, label = get_expenses_by_period(period)
-    if not rows:
-        return None
+@bot.message_handler(func=lambda message: message.text == "📄 PDF сегодня")
+def pdf_today(message):
+    today = datetime.now().strftime("%Y-%m-%d")
+    send_pdf_report(message, today, "За сегодня")
 
-    categories = {}
-    total = 0
-    for row in rows:
-        categories[row[3]] = categories.get(row[3], 0) + row[1]
-        total += row[1]
+@bot.message_handler(func=lambda message: message.text == "📄 PDF неделя")
+def pdf_week(message):
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    send_pdf_report(message, week_ago, "За неделю")
 
-    pdf_buf = io.BytesIO()
-    doc = SimpleDocTemplate(pdf_buf, pagesize=A4,
-                            rightMargin=30, leftMargin=30,
-                            topMargin=30, bottomMargin=30)
-    story = []
-    styles = getSampleStyleSheet()
+@bot.message_handler(func=lambda message: message.text == "📄 PDF месяц")
+def pdf_month(message):
+    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    send_pdf_report(message, month_ago, "За месяц")
+
+@bot.message_handler(func=lambda message: message.text == "📄 PDF всё")
+def pdf_all(message):
+    send_pdf_report(message, "1900-01-01", "За всё время")
+
+def generate_chart(date_from, period_name):
+    try:
+        conn = sqlite3.connect('expenses.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT amount, description, category, date FROM expenses WHERE date >= ? ORDER BY id DESC', (date_from,))
+        expenses = cursor.fetchall()
+        cursor.execute('SELECT category, SUM(amount) FROM expenses WHERE date >= ? GROUP BY category', (date_from,))
+        categories = cursor.fetchall()
+        conn.close()
+        
+        if not expenses or not categories:
+            return None, "Нет данных за этот период", 0
+        
+        # График
+        labels = [c[0] for c in categories]
+        values = [c[1] for c in categories]
+        
+        plt.figure(figsize=(8, 6))
+        
+        # Используем разные цвета
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8']
+        plt.pie(values, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors[:len(values)])
+        plt.title(f'Траты ({period_name})', fontsize=14, fontweight='bold')
+        
+        img_buffer = BytesIO()
+        plt.savefig(img_buffer, format='png', bbox_inches='tight', facecolor='#1a1a2e')
+        plt.close()
+        
+        img_buffer.seek(0)
+        
+        # Текст
+        total = sum(e[0] for e in expenses)
+        text = f"📄 **{period_name}**\n\n"
+        text += f"💰 *Общая сумма: {total:.2f} ₽*\n\n"
+        text += "*По категориям:*\n"
+        for cat, amount in categories:
+            text += f"• {cat}: {amount:.2f} ₽\n"
+        
+        return img_buffer, text, total
+        
+    except Exception as e:
+        print(f"Ошибка при генерации графика: {e}")
+        return None, f"Ошибка: {str(e)}", 0
+
+def send_pdf_report(message, date_from, period_name):
+    # Сначала отправляем сообщение о начале генерации
+    bot.send_message(message.chat.id, "⏳ Генерирую отчёт, подожди...", reply_markup=create_main_keyboard())
+    
+    img_buffer, text, total = generate_chart(date_from, period_name)
+    
+    if img_buffer is None:
+        bot.send_message(message.chat.id, f"❌ {text}", reply_markup=create_main_keyboard())
+        return
+    
+    try:
+        bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=create_main_keyboard())
+        bot.send_photo(message.chat.id, img_buffer, reply_markup=create_main_keyboard())
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка при отправке: {str(e)}", reply_markup=create_main_keyboard())
 
     # Заголовок
     story.append(Paragraph("Финансовый отчёт",
@@ -563,5 +624,6 @@ def handle_expense(message):
 
 print("Running bot...")
 bot.infinity_polling()
+
 
 
